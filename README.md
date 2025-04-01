@@ -1139,5 +1139,252 @@ go get -u -v -tags "reuseport quic kcp zookeeper etcd consul ping" github.com/sm
 
 ### 实现Service
 
+实现一个 Sevice 就像写一个单纯的 Go 结构体:
+
+```go
+import "context"
+
+type Args struct {
+    A int
+    B int
+}
+
+type Reply struct {
+    C int
+}
+
+type Arith int
+
+func (t *Arith) Mul(ctx context.Context, args *Args, reply *Reply) error {
+    reply.C = args.A * args.B
+    return nil
+}
+```
+
+`Arith` 是一个 Go 类型，并且它有一个方法 `Mul`。
+方法 `Mul` 的 第 1 个参数是 `context.Context`。
+方法 `Mul` 的 第 2 个参数是 `args`， `args` 包含了请求的数据 `A`和`B`。
+方法 `Mul` 的 第 3 个参数是 `reply`， `reply` 是一个指向了 `Reply` 结构体的指针。
+方法 `Mul` 的 返回类型是 error (可以为 nil)。
+方法 `Mul` 把 `A * B` 的结果 赋值到 `Reply.C`
+
+现在你已经定义了一个叫做 `Arith` 的 service， 并且为它实现了 `Mul` 方法。 下一步骤中， 我们将会继续介绍如何把这个服务注册给服务器，并且如何用 client 调用它。
+
+### 实现Server
+
+三行代码就可以注册一个服务：
+
+```go
+    s := server.NewServer()
+    s.RegisterName("Arith", new(Arith), "")
+    s.Serve("tcp", ":8972")
+```
+这里你把你的服务命名 `Arith`。
+
+你可以按照如下的代码注册服务。
+
+```go
+s.Register(new(example.Arith), "")
+```
+
+这里简单使用了服务的 类型名称 作为 服务名。
+
+
+### 实现Client
+
+```go
+    // #1
+    d := client.NewPeer2PeerDiscovery("tcp@"+*addr, "")
+    // #2
+    xclient := client.NewXClient("Arith", client.Failtry, client.RandomSelect, d, client.DefaultOption)
+    defer xclient.Close()
+
+    // #3
+    args := &example.Args{
+        A: 10,
+        B: 20,
+    }
+
+    // #4
+    reply := &example.Reply{}
+
+    // #5
+    err := xclient.Call(context.Background(), "Mul", args, reply)
+    if err != nil {
+        log.Fatalf("failed to call: %v", err)
+    }
+
+    log.Printf("%d * %d = %d", args.A, args.B, reply.C)
+```
+
+`#1` 定义了使用什么方式来实现服务发现。 在这里我们使用最简单的 `Peer2PeerDiscovery`（点对点）。客户端直连服务器来获取服务地址。
+
+`#2` 创建了 `XClient`， 并且传进去了 `FailMode`、 `SelectMode` 和默认选项。
+FailMode 告诉客户端如何处理调用失败：重试、快速返回，或者 尝试另一台服务器。
+SelectMode 告诉客户端如何在有多台服务器提供了同一服务的情况下选择服务器。
+
+`#3` 定义了请求：这里我们想获得 `10 * 20` 的结果。 当然我们可以自己算出结果是 `200`，但是我们仍然想确认这与服务器的返回结果是否一致。
+
+`#4` 定义了响应对象， 默认值是0值， 事实上 rpcx 会通过它来知晓返回结果的类型，然后把结果反序列化到这个对象。
+
+`#5` 调用了远程服务并且同步获取结果。
+
+
+### 异步调用Service
+
+以下的代码可以异步调用服务：
+
+```go
+d := client.NewPeer2PeerDiscovery("tcp@"+*addr2, "")
+    xclient := client.NewXClient("Arith", client.Failtry, client.RandomSelect, d, client.DefaultOption)
+    defer xclient.Close()
+
+    args := &example.Args{
+        A: 10,
+        B: 20,
+    }
+
+    reply := &example.Reply{}
+    call, err := xclient.Go(context.Background(), "Mul", args, reply, nil)
+    if err != nil {
+        log.Fatalf("failed to call: %v", err)
+    }
+
+    replyCall := <-call.Done
+    if replyCall.Error != nil {
+        log.Fatalf("failed to call: %v", replyCall.Error)
+    } else {
+        log.Printf("%d * %d = %d", args.A, args.B, reply.C)
+    }
+```
+
+你必须使用 `xclient.Go` 来替换 `xclient.Call`， 然后把结果返回到一个channel里。你可以从chnanel里监听调用结果。
+
+
+
+
+## 服务端开发示例
+
+### Server
+
+你可以在服务端实现Service。
+
+Service的类型并不重要。你可以使用自定义类型来保持状态，或者直接使用 `struct{}`、 `int`。
+
+你需要启动一个TCP或UDP服务器来暴露Service。
+
+你也可以添加一些plugin来为服务器增加新特性。
+
+
+#### Service
+
+作为服务提供者，首先你需要定义服务。
+当前rpcx仅支持 可导出的 `methods` （方法） 作为服务的函数。 
+并且这个可导出的方法必须满足以下的要求：
+
+- 必须是可导出类型的方法
+- 接受3个参数，第一个是 `context.Context`类型，其他2个都是可导出（或内置）的类型。
+- 第3个参数是一个指针
+- 有一个 error 类型的返回值
+
+这段话描述了在rpcx框架中作为服务提供者定义RPC方法时需要遵守的规范，具体可分为以下四个核心要求，其技术背景和实现逻辑如下：
+
+---
+
+### 一、方法必须是可导出类型的方法
+- **实现要求**：方法所属的类型（结构体）和方法名本身都需首字母大写（Go语言的可导出规则）。
+- **技术背景**：rpcx通过反射机制构建服务映射表（serviceMap），只有可导出方法才能被框架识别并注册到服务发现中心。例如网页1中的`Hello`结构体的`Test1`和`Test2`方法均以大写字母开头。
+
+---
+
+### 二、方法参数的三段式结构
+1. **第一个参数：`context.Context`**
+    - **作用**：传递请求上下文信息（如超时控制、元数据等），实现链路追踪或跨服务参数传递。
+    - **示例**：如网页1中的`func (this *Hello) Test1(ctx context.Context, in *CmdIn, out *CmdOut)`，第一个参数固定为`context.Context`。
+
+2. **第二、三个参数类型要求**
+    - **第二个参数**：需为可导出（自定义结构体需首字母大写）或内置类型（如`string`、`int`等），用于接收客户端传入的请求数据。例如网页4中`args *Args`是自定义的可导出结构体。
+    - **第三个参数**：必须为指针类型（如`*CmdOut`），用于服务端向客户端返回处理结果。指针允许直接修改内存数据，避免值拷贝，提升性能。
+
+---
+
+### 三、返回值必须为`error`类型
+- **功能目的**：通过错误返回值明确反馈方法执行状态（如参数校验失败、业务逻辑异常等），例如网页4中的除零错误`errors.New("divide by 0")`。
+- **框架处理**：rpcx会将非`nil`的`error`封装为RPC响应错误，客户端可通过判断错误进行重试或熔断。
+
+---
+
+### 四、规范背后的设计逻辑
+1. **服务发现与反射**  
+   rpcx通过反射动态构建服务方法表（如网页1的`serviceMap`），只有符合签名的方法才能被正确注册到注册中心（如ZooKeeper），供消费方查询调用。
+
+2. **参数设计的合理性**
+    - **上下文隔离**：`context.Context`实现请求级数据隔离，避免并发问题。
+    - **输入输出分离**：第二个参数为纯输入，第三个指针参数专用于输出结果，符合RPC的请求-响应模型。
+
+3. **错误处理标准化**  
+   强制`error`返回确保服务端异常能透传到客户端，结合rpcx的失败重试（Failover）、熔断等治理策略，提升系统可靠性。
+
+---
+
+### 五、实际代码示例（结合规范）
+```go
+// 定义可导出结构体（服务提供者）
+type MathService struct{}
+
+// 可导出方法：参数1为context.Context，参数2为内置类型，参数3为指针，返回error
+func (s *MathService) Add(ctx context.Context, a int, b int, result *int) error {
+    *result = a + b // 通过指针修改返回值
+    return nil      // 成功返回nil
+}
+```
+
+通过遵循上述规范，rpcx能自动将服务注册到注册中心，并实现高效的远程调用
+
+---
+
+你可以使用 `RegisterName` 来注册 `rcvr` 的方法，这里这个服务的名字叫做 `name`。
+如果你使用 `Register`， 生成的服务的名字就是 `rcvr`的类型名。
+你可以在注册中心添加一些元数据供客户端或者服务管理者使用。例如 `weight`、`geolocation`、`metrics`。
+
+
+```go
+func (s *Server) Register(rcvr interface{}, metadata string) error
+func (s *Server) RegisterName(name string, rcvr interface{}, metadata string) error
+```
+
+这里是一个实现了 `Mul` 方法的例子：
+
+```go
+import "context"
+
+type Args struct {
+    A int
+    B int
+}
+
+type Reply struct {
+    C int
+}
+
+type Arith int
+
+func (t *Arith) Mul(ctx context.Context, args *Args, reply *Reply) error {
+    reply.C = args.A * args.B
+    return nil
+}
+```
+
+在这个例子中，你可以定义 `Arith` 为 `struct{}` 类型， 它不会影响到这个服务。
+你也可以定义 `args` 为 `Args`， 也不会产生影响。
+
+#### Server
+
+在你定义完服务后，你会想将它暴露出去来使用。你应该通过启动一个TCP或UDP服务器来监听请求。
+
+服务器支持以如下这些方式启动，监听请求和关闭：
+
+
+
 
 
