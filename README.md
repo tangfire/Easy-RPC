@@ -2901,8 +2901,453 @@ DNS-SD 协议使用了PTR、SRV、TXT 3种类型的资源记录来完整地描�
 
 #### 服务器
 
+```go
+func main() {
+    flag.Parse()
+
+    s := server.NewServer()
+    addRegistryPlugin(s)
+
+    s.RegisterName("Arith", new(example.Arith), "")
+    s.Serve("tcp", *addr)
+}
+
+func addRegistryPlugin(s *server.Server) {
+
+    r := serverplugin.NewMDNSRegisterPlugin("tcp@"+*addr, 8972, metrics.NewRegistry(), time.Minute, "")
+    err := r.Start()
+    if err != nil {
+        log.Fatal(err)
+    }
+    s.Plugins.Add(r)
+}
+```
+
+#### 客户端
+
+```go
+func main() {
+    flag.Parse()
+
+    d := client.NewMDNSDiscovery("Arith", 10*time.Second, 10*time.Second, "")
+    xclient := client.NewXClient("Arith", client.Failtry, client.RandomSelect, d, client.DefaultOption)
+    defer xclient.Close()
+
+    args := &example.Args{
+        A: 10,
+        B: 20,
+    }
+
+    reply := &example.Reply{}
+    err := xclient.Call(context.Background(), "Mul", args, reply)
+    if err != nil {
+        log.Fatalf("failed to call: %v", err)
+    }
+
+    log.Printf("%d * %d = %d", args.A, args.B, reply.C)
+
+}
+```
+
+
+### Inprocess
+
+这个Registry用于进程内的测试。 在开发过程中，可能不能直接连接线上的服务器直接测试，而是写一些mock程序作为服务，这个时候就可以使用这个registry, 测试通过在部署的时候再换成相应的其它registry.
+
+在这种情况下， client和server并不会走TCP或者UDP协议，而是直接进程内方法调用,所以服务器代码是和client代码在一起的。
+
+
+```go
+func main() {
+    flag.Parse()
+
+    s := server.NewServer()
+    addRegistryPlugin(s)
+
+    s.RegisterName("Arith", new(example.Arith), "")
+
+    go func() {
+        s.Serve("tcp", *addr)
+    }()
+
+    d := client.NewInprocessDiscovery()
+    xclient := client.NewXClient("Arith", client.Failtry, client.RandomSelect, d, client.DefaultOption)
+    defer xclient.Close()
+
+    args := &example.Args{
+        A: 10,
+        B: 20,
+    }
+
+    for i := 0; i < 100; i++ {
+
+        reply := &example.Reply{}
+        err := xclient.Call(context.Background(), "Mul", args, reply)
+        if err != nil {
+            log.Fatalf("failed to call: %v", err)
+        }
+
+        log.Printf("%d * %d = %d", args.A, args.B, reply.C)
+
+    }
+}
+
+func addRegistryPlugin(s *server.Server) {
+
+    r := client.InprocessClient
+    s.Plugins.Add(r)
+}
+```
+
+# 特性
+
+## 编解码
+
+*Example*:[iterator-go](https://github.com/rpcxio/rpcx-examples/tree/master/codec/iterator)
+
+当前rpcx提供了四种内置的编解码器，你也可以定义你自己的编解码器， 如 [Avro](https://github.com/linkedin/goavro) 等:
+
+
+```go
+// SerializeType defines serialization type of payload.
+type SerializeType byte
+
+const (
+    // SerializeNone uses raw []byte and don't serialize/deserialize
+    SerializeNone SerializeType = iota
+    // JSON for payload.
+    JSON
+    // ProtoBuffer for payload.
+    ProtoBuffer
+    // MsgPack for payload
+    MsgPack
+)
+```
+
+服务会使用和客户端一样的编解码器，客户端使用JSON, 服务也返回 JSON 格式的数据。 rpcx 默认使用 msgpack 编解码器。
+
+```go
+var DefaultOption = Option{
+    Retries:        3,
+    RPCPath:        share.DefaultRPCPath,
+    ConnectTimeout: 10 * time.Second,
+    Breaker:        CircuitBreaker,
+    SerializeType:  protocol.MsgPack,
+    CompressType:   protocol.None,
+}
+```
+
+你可以设置你的option, 选择你自己的编解码器:
+
+```go
+func NewXClient(servicePath string, failMode FailMode, selectMode SelectMode, discovery ServiceDiscovery, option Option) 
+```
+
+### SerializeNone
+
+这种编解码器不会对数据进行编解码，并且要求数据是 `[]byte` 类型的数据。
+
+### JSON
+
+JSON是一个通用的数据交换的格式，可以应用在很多语言中。
+
+对性能要求不是非常高的场景，可以使用这种编解码。
+
+### Protobuf
+
+
+*Example*:[protobuf](https://github.com/rpcxio/rpcx-examples/tree/master/codec/protobuf)
+
+[Protobuf](https://protobuf.dev/)是一个高性能的编解码器， 由google出品， 应用在很多项目中。
+
+
+### MsgPack
+
+*默认的编解码器*
+
+[messagepack](https://msgpack.org/index.html) 是另外一种高性能的编解码器， 也是跨语言的编解码器。
+
+
+### 定制编解码器
+
+这个例子[gob](https://github.com/rpcxio/rpcx-examples/tree/master/codec/gob)使用gob作为编解码器
+
+
+## 失败模式
+
+
+在分布式架构中， 如SOA或者微服务架构，你不能担保服务调用如你所预想的一样好。有时候服务会宕机、网络被挖断、网络变慢等，所以你需要容忍这些状况。
+
+rpcx支持四种调用失败模式，用来处理服务调用失败后的处理逻辑， 你可以在创建`XClient`的时候设置它。
+
+`FailMode`的设置仅仅对同步调用有效`(XClient.Call)`, 异步调用用，这个参数是无意义的。
+
+### Failfast
+
+*示例*: [failfast](https://github.com/rpcxio/rpcx-examples/tree/master/failmode/failfast)
+
+在这种模式下， 一旦调用一个节点失败， rpcx立即会返回错误。 注意这个错误不是业务上的 `Error`, 业务上服务端返回的`Error`应该正常返回给客户端，这里的错误可能是网络错误或者服务异常。
+
+### Failover
+
+*示例*:[failover](https://github.com/rpcxio/rpcx-examples/tree/master/failmode/failover)
+
+在这种模式下, rpcx如果遇到错误，它会尝试调用另外一个节点， 直到服务节点能正常返回信息，或者达到最大的重试次数。
+重试测试`Retries`在参数`Option`中设置， 缺省设置为3。
 
 
 
+### Failtry
 
+*示例*:[failtry](https://github.com/rpcxio/rpcx-examples/tree/master/failmode/failtry)
+
+在这种模式下， rpcx如果调用一个节点的服务出现错误， 它也会尝试，但是还是选择这个节点进行重试， 直到节点正常返回数据或者达到最大重试次数。
+
+### Failbackup
+
+*示例*:[failbackup](https://github.com/rpcxio/rpcx-examples/tree/master/failmode/failbackup)
+
+在这种模式下， 如果服务节点在一定的时间内不返回结果， rpcx客户端会发送相同的请求到另外一个节点， 只要这两个节点有一个返回， rpcx就算调用成功。
+
+这个设定的时间配置在 `Option.BackupLatency` 参数中。
+
+
+## Fork模式
+
+*Example*:[fork](https://github.com/rpcxio/rpcx-examples/tree/master/fork)
+
+
+`Fork` 是 `XClient` 的方法，您可以使用它向包含此服务的所有服务器发送请求。
+
+如果任何服务器返回没有错误的响应，则该XClient将返回 `Fork` 。如果所有服务器都返回错误， `Fork` 返回这些错误的一个错误。
+
+它类似于thee  `Failbackup` 模式。 `Failbackup` 最多使用两个请求，但 `Fork` 使用更多请求（与服务器数相同）。
+
+
+```go
+func main() {
+    ……
+
+    xclient := client.NewXClient("Arith", client.Failover, client.RoundRobin, d, client.DefaultOption)
+    defer xclient.Close()
+
+    args := &example.Args{
+        A: 10,
+        B: 20,
+    }
+
+    for {
+        reply := &example.Reply{}
+        err := xclient.Fork(context.Background(), "Mul", args, reply)
+        if err != nil {
+            log.Fatalf("failed to call: %v", err)
+        }
+
+        log.Printf("%d * %d = %d", args.A, args.B, reply.C)
+        time.Sleep(1e9)
+    }
+
+}
+```
+
+
+## 广播模式
+
+*Example*:[broadcast](https://github.com/rpcxio/rpcx-examples/tree/master/broadcast)
+
+
+`Broadcast` 是 `XClient` 的一个方法， 你可以将一个请求发送到这个服务的所有节点。
+如果所有的节点都正常返回，没有错误的话， `Broadcast`将返回其中的一个节点的返回结果。 如果有节点返回错误的话，`Broadcast`将返回这些错误信息中的一个。
+
+
+
+```go
+func main() {
+    ……
+
+    xclient := client.NewXClient("Arith", client.Failover, client.RoundRobin, d, client.DefaultOption)
+    defer xclient.Close()
+
+    args := &example.Args{
+        A: 10,
+        B: 20,
+    }
+
+    for {
+        reply := &example.Reply{}
+        err := xclient.Broadcast(context.Background(), "Mul", args, reply)
+        if err != nil {
+            log.Fatalf("failed to call: %v", err)
+        }
+
+        log.Printf("%d * %d = %d", args.A, args.B, reply.C)
+        time.Sleep(1e9)
+    }
+
+}
+```
+
+
+
+## 路由
+
+在大型的微服务系统中，我们会为同一个服务部署多个节点， 以便服务可以支持大并发的访问。它们可能部署在同一个数据中心的多个节点，或者多个数据中心中。
+
+那么， 客户端该如何选择一个节点呢？ rpcx通过 `Selector`来实现路由选择， 它就像一个负载均衡器，帮助你选择出一个合适的节点。
+
+rpcx提供了多个路由策略算法，你可以在创建`XClient`来指定。
+
+注意，这里的路由是针对 `ServicePath` 和 `ServiceMethod`的路由。
+
+
+### 随机
+
+
+*Example*:[random](https://github.com/rpcxio/rpcx-examples/tree/master/selector/random)
+
+从配置的节点中随机选择一个节点。
+
+最简单，但是有时候单个节点的负载比较重。这是因为随机数只能保证在大量的请求下路由的比较均匀，并不能保证在很短的时间内负载是均匀的。
+
+
+
+### 轮询
+
+*Example*:[roundrobin](https://github.com/rpcxio/rpcx-examples/tree/master/selector/roundrobin)
+
+使用轮询的方式，依次调用节点，能保证每个节点都均匀的被访问。在节点的服务能力都差不多的时候适用。
+
+
+### WeightedRoundRobin
+
+*Example*:[weighted](https://github.com/rpcxio/rpcx-examples/tree/master/selector/weighted)
+
+使用Nginx [平滑的基于权重的轮询算法](https://github.com/phusion/nginx/commit/27e94984486058d73157038f7950a0a36ecc6e35)。
+
+比如如果三个节点`a`、`b`、`c`的权重是`{ 5, 1, 1 }`, 这个算法的调用顺序是 `{ a, a, b, a, c, a, a }`,
+相比较 `{ c, b, a, a, a, a, a }`, 虽然权重都一样，但是前者更好，不至于在一段时间内将请求都发送给`a`。
+
+### 网络质量优先
+
+*Example*:[ping](https://github.com/rpcxio/rpcx-examples/tree/master/selector/ping)
+
+首先客户端会基于`ping(ICMP)`探测各个节点的网络质量，越短的ping时间，这个节点的权重也就越高。但是，我们也会保证网络较差的节点也有被调用的机会。
+
+假定`t`是ping的返回时间， 如果超过1秒基本就没有调用机会了:
+
+- weight=191 if t <= 10
+- weight=201 -t if 10 < t <=200
+- weight=1 if 200 < t < 1000
+- weight=0 if t >= 1000
+
+### 一致性哈希
+
+*Example*:[hash](https://github.com/rpcxio/rpcx-examples/tree/master/selector/hash)
+
+使用 [JumpConsistentHash](https://arxiv.org/abs/1406.2294) 选择节点， 相同的servicePath, serviceMethod 和 参数会路由到同一个节点上。 JumpConsistentHash 是一个快速计算一致性哈希的算法，但是有一个缺陷是它不能删除节点，如果删除节点，路由就不准确了，所以在节点有变动的时候它会重新计算一致性哈希。
+
+### 地理位置优先
+
+*Example*:[geo](https://github.com/rpcxio/rpcx-examples/tree/master/selector/geo)
+
+如果我们希望的是客户端会优先选择离它最新的节点， 比如在同一个机房。
+如果客户端在北京， 服务在上海和美国硅谷，那么我们优先选择上海的机房。
+
+它要求服务在注册的时候要设置它所在的地理经纬度。
+
+如果两个服务的节点的经纬度是一样的， rpcx会随机选择一个。
+
+必须使用下面的方法配置客户端的经纬度信息：
+
+```go
+func (c *xClient) ConfigGeoSelector(latitude, longitude float64)
+```
+
+### 定制路由规则
+
+*Example*:[customized](https://github.com/rpcxio/rpcx-examples/tree/master/selector/customized)
+
+如果上面内置的路由规则不满足你的需求，你可以参考上面的路由器自定义你自己的路由规则。
+
+曾经有一个网友提到， 如果调用参数的某个字段的值是特殊的值的话，他们会把请求路由到一个指定的机房。这样的需求就要求你自己定义一个路由器，只需实现实现下面的接口：
+
+```go
+type Selector interface {
+    Select(ctx context.Context, servicePath, serviceMethod string, args interface{}) string
+    UpdateServer(servers map[string]string)
+}
+```
+
+- `Select`: defines the select algorithm.
+- `UpdateServer`: clients init the nodes and update if nodes change.
+
+
+## 超时
+
+*Example*:[timeout](https://github.com/rpcxio/rpcx-examples/tree/master/timeout)
+
+超时机制可以保护服务调用陷入无限的等待之中。超时定义了服务的最长等待时间，如果在给定的时间没有相应，服务调用就进入下一个状态，或者重试、或者立即返回错误。
+
+
+### Server
+
+你可以使用`OptionFn`设置服务器的 `readTimeout` 和 `writeTimeout`。
+
+```go
+type Server struct {
+    ……
+    readTimeout  time.Duration
+    writeTimeout time.Duration
+    ……
+}
+```
+
+设置超时的`OptionFn`是 :
+
+
+```go
+func WithReadTimeout(readTimeout time.Duration) OptionFn
+func WithWriteTimeout(writeTimeout time.Duration) OptionFn 
+```
+
+### Client
+
+客户端有两种方式设置超时。
+
+一种是设置连接的 read/write deadline, 一种是使用 `context.Context`.
+
+#### read/write deadline
+
+
+Client的 `Option` 可以设置连接的超时值:
+
+```go
+type Option struct {
+    ……
+    //ConnectTimeout sets timeout for dialing
+    ConnectTimeout time.Duration
+    // ReadTimeout sets readdeadline for underlying net.Conns
+    ReadTimeout time.Duration
+    // WriteTimeout sets writedeadline for underlying net.Conns
+    WriteTimeout time.Duration
+    ……
+}
+```
+
+`DefaultOption` 设置连接超时值为 10 秒，但是没有设置 ReadTimeout 和 WriteTimeout。 如果没有设置，则不会有超时限制。
+
+由于多个服务可能共用同一个节点，有可能出现多个服务调用互相影响的状况。
+
+#### context.Context
+
+`context.Context` 也可以用来控制超时。
+
+你可以使用`context.WithTimeout` 来设置超时时间，这是推荐的设置超时的方式。
+
+
+```go
+func WithTimeout(parent Context, timeout time.Duration) (Context, CancelFunc)
+```
+
+## 元数据
 
