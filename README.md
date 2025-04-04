@@ -3351,3 +3351,1214 @@ func WithTimeout(parent Context, timeout time.Duration) (Context, CancelFunc)
 
 ## 元数据
 
+*Example*:[metadata](https://github.com/rpcxio/rpcx-examples/tree/master/metadata)
+
+客户端和服务器端可以互相传递元数据。
+
+元数据不是服务请求和服务响应的业务数据，而是一些辅助性的数据。
+
+元数据是一个键值队的列表，键和值都是字符串， 类似 `http.Header`。
+
+### Client
+
+如果你想在客户端传给服务器元数据， 你 必须 在上下文中设置 `share.ReqMetaDataKey`。
+
+如果你想在客户端读取客户端的数据， 你 必须 在上下文中设置 `share.ResMetaDataKey`。
+
+```go
+// client.go
+reply := &example.Reply{}
+ctx := context.WithValue(context.Background(), share.ReqMetaDataKey, map[string]string{"aaa": "from client"})
+ctx = context.WithValue(ctx, share.ResMetaDataKey, make(map[string]string))
+err := xclient.Call(ctx, "Mul", args, reply)
+```
+
+### Server
+
+服务器可以从上下文读取`share.ReqMetaDataKey` 和 `share.ResMetaDataKey`:
+
+```go
+// server.go
+reqMeta := ctx.Value(share.ReqMetaDataKey).(map[string]string)
+resMeta := ctx.Value(share.ResMetaDataKey).(map[string]string)
+```
+
+
+## 心跳
+
+*Example*:[heartbeat](https://github.com/rpcxio/rpcx-examples/tree/master/heartbeat)
+
+你可以设置自动的心跳来保持连接不断掉。
+rpcx会自动处理心跳(事实上它直接就丢弃了心跳)。
+
+客户端需要启用心跳选项，并且设置心跳间隔：
+
+
+```go
+option := client.DefaultOption
+option.Heartbeat = true
+option.HeartbeatInterval = time.Second
+
+```
+
+## 分组
+
+*Example*:[group](https://github.com/rpcxio/rpcx-examples/tree/master/group)
+
+当你在服务器端注册服务的时候，你可能注意到第三个参数我们一般设置它为空的字符串，事实上你可以为服务增加一些元数据。
+
+你可以通过UI管理器查看服务的元数据 [rpcx-ui](https://github.com/smallnest/rpcx-ui)，或者增删一些元数据。
+
+`group` 就是一个元数据。如果你为服务设置了设置`group`， 只有在这个`group`的客户端才能访问这些服务(这个限制是在路由的时候限制的， 当然你在客户端绕过这个限制)。
+
+
+```go
+// server.go
+
+func main() {
+    flag.Parse()
+
+    go createServer1(*addr1, "")
+    go createServer2(*addr2, "group=test")
+
+    select {}
+}
+
+func createServer1(addr, meta string) {
+    s := server.NewServer()
+    s.RegisterName("Arith", new(example.Arith), meta)
+    s.Serve("tcp", addr)
+}
+
+func createServer2(addr, meta string) {
+    s := server.NewServer()
+    s.RegisterName("Arith", new(Arith), meta)
+    s.Serve("tcp", addr)
+}
+```
+
+
+客户端通过 `option.Group` 设置组。
+
+如果在客户端你没有设置 `option.Group`, 客户端可以访问这些服务， 无论服务是否设置了组还是没设置。
+
+
+```go
+// server.go
+
+func main() {
+    flag.Parse()
+
+    go createServer1(*addr1, "")
+    go createServer2(*addr2, "group=test")
+
+    select {}
+}
+
+func createServer1(addr, meta string) {
+    s := server.NewServer()
+    s.RegisterName("Arith", new(example.Arith), meta)
+    s.Serve("tcp", addr)
+}
+
+func createServer2(addr, meta string) {
+    s := server.NewServer()
+    s.RegisterName("Arith", new(Arith), meta)
+    s.Serve("tcp", addr)
+}
+```
+
+客户端通过 `option.Group` 设置组。
+
+如果在客户端你没有设置 `option.Group`, 客户端可以访问这些服务， 无论服务是否设置了组还是没设置。
+
+
+```go
+// client.go
+option := client.DefaultOption
+option.Group = "test"
+xclient := client.NewXClient("Arith", client.Failover, client.RoundRobin, d, option)
+defer xclient.Close()
+
+args := &example.Args{
+    A: 10,
+    B: 20,
+}
+
+for {
+    reply := &example.Reply{}
+    err := xclient.Call(context.Background(), "Mul", args, reply)
+    if err != nil {
+        log.Fatalf("failed to call: %v", err)
+    }
+
+    log.Printf("%d * %d = %d", args.A, args.B, reply.C)
+    time.Sleep(1e9)
+}
+```
+
+## 服务状态
+
+
+*Example*:[state](https://github.com/rpcxio/rpcx-examples/tree/master/state)
+
+`state` 是另外一个元数据。 如果你在元数据中设置了`state=inactive`, 客户端将不能访问这些服务，即使这些服务是”活”着的。
+
+你可以使用临时禁用一些服务，而不是杀掉它们， 这样就实现了服务的降级。 server.
+
+你可以通过  [rpcx-ui](https://github.com/smallnest/rpcx-ui)  来时实现禁用和启用的功能。
+
+
+```go
+// server.go
+func main() {
+    flag.Parse()
+
+    go createServer1(*addr1, "")
+    go createServer2(*addr2, "state=inactive")
+
+    select {}
+}
+
+func createServer1(addr, meta string) {
+    s := server.NewServer()
+    s.RegisterName("Arith", new(example.Arith), meta)
+    s.Serve("tcp", addr)
+}
+
+func createServer2(addr, meta string) {
+    s := server.NewServer()
+    s.RegisterName("Arith", new(Arith), meta)
+    s.Serve("tcp", addr)
+}
+```
+
+```go
+// client.go
+xclient := client.NewXClient("Arith", client.Failover, client.RoundRobin, d, client.DefaultOption)
+defer xclient.Close()
+
+args := &example.Args{
+    A: 10,
+    B: 20,
+}
+
+for {
+    reply := &example.Reply{}
+    err := xclient.Call(context.Background(), "Mul", args, reply)
+    if err != nil {
+        log.Fatalf("failed to call: %v", err)
+    }
+
+    log.Printf("%d * %d = %d", args.A, args.B, reply.C)
+    time.Sleep(1e9)
+}
+```
+
+## 断路器
+
+
+
+在一个节点失败的情况下，断路器可以避免这个错误影响其他服务，以免出现雪崩的情况。查看断路器的详细介绍: [Pattern:Circuit Breaker](https://microservices.io/patterns/reliability/circuit-breaker.html).
+
+客户端通过断路器调用服务， 一旦连续的错误达到一个阈值，断路器就会断开进行保护，这个时候如果还调用这个节点的话，直接就返回错误。等一定的时间，断路器会处于半开的状态，允许一定数量的请求尝试发送这个节点，如果正常访问，断路器就处于全开的状态，否则又进入短路的状态。
+
+Rpcx 定义了 `Breaker` 接口， 你可以自己实现复杂情况的断路器。
+
+```go
+type Breaker interface {
+    Call(func() error, time.Duration) error
+}
+```
+
+Rpcx 提供了一个简单的断路器 `ConsecCircuitBreaker`， 它在连续失败一定次数后就会断开，再经过一段时间后打开。
+你可以将你的断路器设置到 `Option.Breaker`中。
+
+
+# 插件
+
+## Metrics插件
+
+*Example*:[metrics](https://github.com/rpcxio/rpcx-examples/tree/master/metrics)
+
+
+Metrics 插件使用流行的[go-metrics](https://github.com/rcrowley/go-metrics) 来计算服务的指标。
+
+它包含多个统计指标:
+
+1. serviceCounter
+2. clientMeter
+3. “service_”+servicePath+”.”+serviceMethod+”ReadQps”
+4. “service_”+servicePath+”.”+serviceMethod+”WriteQps”
+5. “service_”+servicePath+”.”+serviceMethod+”_CallTime”
+
+你可以将metrics输出到graphite中，通过grafana来监控。
+
+
+## 限流
+
+*Example*:[rate-limiting](https://github.com/smallnest/rpcx/blob/master/serverplugin/rate_limiting.go)
+
+限流是一种保护错误，避免服务被突发的或者大量的请求所拖垮。
+
+这个插件使用  [juju/ratelimit](https://github.com/juju/ratelimit)  来限流。
+
+使用 `func NewRateLimitingPlugin(fillInterval time.Duration, capacity int64) *RateLimitingPlugin` 来创建这个插件。
+
+
+## 别名
+
+*Example*:[alias](https://github.com/rpcxio/rpcx-examples/tree/master/alias)
+
+这个插件可以为一个服务方法设置一个别名。
+
+下面的代码使用 `Arith`的别名`a.b.c.d`， 为`Mul`设置别名`Times`。
+
+```go
+func main() {
+    flag.Parse()
+
+    a := serverplugin.NewAliasPlugin()
+    a.Alias("a.b.c.d", "Times", "Arith", "Mul")
+    s := server.NewServer()
+    s.Plugins.Add(a)
+    s.RegisterName("Arith", new(example.Arith), "")
+    err := s.Serve("reuseport", *addr)
+    if err != nil {
+        panic(err)
+    }
+}
+```
+
+客户端可以使用别名来调用服务：
+
+```go
+func main() {
+    flag.Parse()
+
+    d := client.NewPeer2PeerDiscovery("tcp@"+*addr, "")
+
+    option := client.DefaultOption
+    option.ReadTimeout = 10 * time.Second
+
+    xclient := client.NewXClient("a.b.c.d", client.Failtry, client.RandomSelect, d, option)
+    defer xclient.Close()
+
+    args := &example.Args{
+        A: 10,
+        B: 20,
+    }
+
+    reply := &example.Reply{}
+    err := xclient.Call(context.Background(), "Times", args, reply)
+    if err != nil {
+        log.Fatalf("failed to call: %v", err)
+    }
+
+    log.Printf("%d * %d = %d", args.A, args.B, reply.C)
+
+}
+```
+
+
+## 身份认证
+
+*Example*:[auth](https://github.com/rpcxio/rpcx-examples/tree/master/auth)
+
+出于安全的考虑， 很多场景下只有授权的客户端才可以调用服务。
+
+客户端必须设置一个 `token`, 这个`token`可以从其他的 OAuth/OAuth2 服务器获得，或者由服务提供者分配。
+
+服务接收到请求后，需要验证这个`token`。如果这个`token`是从 OAuth2服务器中申请到，则服务需要到OAuth2服务中去验证， 如果是自己分配的，则需要和自己的记录进行对别。
+
+因为rpcx提供的是一个身份验证的框架，所以具体的身份验证需要自己集成和验证。
+
+
+```go
+func main() {
+    flag.Parse()
+
+    s := server.NewServer()
+    s.RegisterName("Arith", new(example.Arith), "")
+    s.AuthFunc = auth
+    s.Serve("reuseport", *addr)
+}
+
+func auth(ctx context.Context, req *protocol.Message, token string) error {
+
+    if token == "bearer tGzv3JOkF0XG5Qx2TlKWIA" {
+        return nil
+    }
+
+    return errors.New("invalid token")
+}
+```
+
+服务器必须定义 `AuthFunc` 来验证token。在上面的例子中， 只有token为`bearer tGzv3JOkF0XG5Qx2TlKWIA` 才是合法的客户端。
+
+客户端必须设置这个`toekn`:
+
+
+```go
+func main() {
+    flag.Parse()
+
+    d := client.NewPeer2PeerDiscovery("tcp@"+*addr, "")
+
+    option := client.DefaultOption
+    option.ReadTimeout = 10 * time.Second
+
+    xclient := client.NewXClient("Arith", client.Failtry, client.RandomSelect, d, option)
+    defer xclient.Close()
+
+    //xclient.Auth("bearer tGzv3JOkF0XG5Qx2TlKWIA")
+    xclient.Auth("bearer abcdefg1234567")
+
+    args := &example.Args{
+        A: 10,
+        B: 20,
+    }
+
+    reply := &example.Reply{}
+    ctx := context.WithValue(context.Background(), share.ReqMetaDataKey, make(map[string]string))
+    err := xclient.Call(ctx, "Mul", args, reply)
+    if err != nil {
+        log.Fatalf("failed to call: %v", err)
+    }
+
+    log.Printf("%d * %d = %d", args.A, args.B, reply.C)
+
+}
+```
+
+注意: *你必须设置* `map[string]string` *为* `share.ReqMetaDataKey` *的值，否则调用会出错*
+
+
+## 插件开发
+
+pcx为服务器和客户端定义了几个插件接口，在一些处理点上可以调用插件。
+
+### Server Plugin
+
+
+[go doc](https://pkg.go.dev/github.com/smallnest/rpcx/server#PostConnAcceptPlugin)
+
+```go
+type PostConnAcceptPlugin
+
+type PostConnAcceptPlugin interface {
+    HandleConnAccept(net.Conn) (net.Conn, bool)
+}
+
+
+type PostReadRequestPlugin
+
+type PostReadRequestPlugin interface {
+    PostReadRequest(ctx context.Context, r *protocol.Message, e error) error
+}
+
+PostReadRequestPlugin represents .
+type PostWriteResponsePlugin
+
+type PostWriteResponsePlugin interface {
+    PostWriteResponse(context.Context, *protocol.Message, *protocol.Message, error) error
+}
+
+PostWriteResponsePlugin represents .
+type PreReadRequestPlugin
+
+type PreReadRequestPlugin interface {
+    PreReadRequest(ctx context.Context) error
+}
+
+PreReadRequestPlugin represents .
+type PreWriteResponsePlugin
+
+type PreWriteResponsePlugin interface {
+    PreWriteResponse(context.Context, *protocol.Message) error
+}
+
+PreWriteResponsePlugin represents . 
+```
+
+### Client Plugin
+
+[go doc](https://pkg.go.dev/github.com/smallnest/rpcx/client#Plugin)
+
+```go
+type PluginContainer
+
+type PluginContainer interface {
+    Add(plugin Plugin)
+    Remove(plugin Plugin)
+    All() []Plugin
+
+    DoPreCall(ctx context.Context, servicePath, serviceMethod string, args interface{}) error
+    DoPostCall(ctx context.Context, servicePath, serviceMethod string, args interface{}, reply interface{}, err error) error
+}
+
+type PostCallPlugin
+
+type PostCallPlugin interface {
+    DoPostCall(ctx context.Context, servicePath, serviceMethod string, args interface{}, reply interface{}, err error) error
+}
+
+PostCallPlugin is invoked after the client calls a server.
+type PreCallPlugin
+
+type PreCallPlugin interface {
+    DoPreCall(ctx context.Context, servicePath, serviceMethod string, args interface{}) error
+}
+
+PreCallPlugin is invoked before the client calls a server. 
+```
+
+# 其他
+
+## Benchmark
+
+略
+
+## UI管理工具
+
+rpcx提供了一个简单的UI管理程序，可以查看和搜索当前注册的服务以及服务的状态， 同时你也可以临时禁用服务，分组或者更改服务的元数据。
+
+[rpck-ui](https://github.com/smallnest/rpcx-ui)
+
+![img_04](./asset/img_4.png)
+
+
+## 协议详解
+
+rpcx 的 请求(request)和响应(response)使用相同的数据结构。
+
+一个消息由下面的项组成:
+
+1. Header: 4 字节
+2. Message ID: 8 字节
+3. total size: 4 字节, 不包含header和它本身, uint32类型
+4. servicePath值的长度: 4 字节, uint32类型
+5. servicePath的值: UTF-8 字符串
+6. serviceMethod值的长度: 4 字节, uint32类型
+7. serviceMethod的值: UTF-8 字符串
+8. metadata的大小: 4 字节, uint32类型
+9. metadata: 格式: `size` `key1` `string` `size` `value1 string`, 可以包含多个
+10. playload的大小: 4 字节, uint32类型
+11. playload的值: slice of byte
+
+
+`#4` + `#6` + `#8` + `#10 + (4 + 4 + 4 + 4)` 的字节数加起来等于 `#3`的值。
+
+`servicePath`、`serviceMethod`、和`meta`中的`key` 、 `value` 都是UTF-8 字符串。
+
+rpcx 使用 `size of an element` + `element` 的格式定义可变长的元素， 就像  [TLV](https://en.wikipedia.org/wiki/Type%E2%80%93length%E2%80%93value) ， 但是 rpcx 不需要 `Type`字段， 这是因为 元素的`Type` 要么是 UTF-8 字符串，要么就是明确的slice。
+
+对整数使用大端 BigEndian 编码 (integer type, int64, uint32 等等)
+
+![img_05](./asset/img_5.png)
+
+
+1、T第一个字节是 `0x08`, 它是一个魔数 (magic number)
+
+2、第二个字节是 `version`. 当前的版本是 0.
+
+3、MessageType 可以是:
+
+- 0: Request
+- 1: Response
+
+4、Heartbeat: bool. 指示这个消息是否是heartbeat消息
+
+5、Oneway: bool. true的话意味着服务不需要返回response
+
+6、CompressType: 压缩类型
+
+- 0: don’t compress
+- 1: Gzip
+
+7、MessageStatusType: 指示 response 是一个错误还是正常的返回值
+
+- 0: Normal
+- 1: Error
+
+8、SerializeType: 编解码格式
+
+- 0: 使用原始的byte slice
+- 1: JSON
+- 2: Protobuf
+- 3: MessagePack
+
+如果服务处理请求失败，它会返回error response， 它会设置 response 的 MessageStatusType为 1, 并且在meta中设置错误信息， meta中的 key值是 *rpcx_error*， 值是错误信息。
+
+
+# 网关
+
+## Gateway
+
+[Gateway](https://github.com/rpcxio/rpcx-gateway) 为 rpcx services 提供了 http 网关服务.
+
+你可以使用你熟悉的编程语言， 比如Java、Python、C#、Node.js、Php、C\C++、Rust等等来调用 rpcx 服务。查看一些编程语言实现的[例子](https://github.com/rpcxio/rpcx-gateway/blob/master/examples/README.md) 。  
+
+这意味着，你可以不用实现 rpcx的协议，而是使用熟悉的 http 访问方式调用 rpcx 服务， 设置用`curl`、`wget`等命令行工具。
+
+
+### 部署模型
+
+使用网关程序有两种部署模型: `Gateway` 和 `Agent`。
+
+
+#### Gateway
+
+![img_06](./asset/img_6.png)
+
+你可以部署为网关模式。网关程序运行在独立的机器上，所有的client都将http请求发送给gateway, gateway负责将请求转换成rpcx的请求，并调用相应的rpcx 服务， 它将rpcx 的返回结果转换成http的response, 返回给client。
+
+你可以部署多台gateway程序， 并可以利用nginx等进行负载均衡。
+
+
+
+#### Agent
+
+![img_07](./asset/img_7.png)
+
+你可以将网关程序和你的client一起部署， agent作为一个后台服务部署在 client机器上。 如果你的机器有多个client, 你只需部署一个agent。
+
+Client发送 http 请求到本地的agent, 本地的agent将请求转为 rpcx请求，然后转发到相应的 rpcx服务上， 然后将 rpcx的response转换为 http response返回给 client。
+
+它类似 mesh service的 Sidecar模式， 但是比较好的是， 同一台机器上的client只需一个agent。
+
+
+### http协议
+
+你可以使用任意的编程语言来发送http请求，但是需要额外设置一些header (但是不一定设置全部的header, 按需设置):
+
+- X-RPCX-Version: rpcx 版本
+- X-RPCX-MesssageType: 设置为0,代表请求
+- X-RPCX-Heartbeat: 是否是heartbeat请求, 缺省false
+- X-RPCX-Oneway: 是否是单向请求, 缺省false.
+- X-RPCX-SerializeType: 0 as raw bytes, 1 as JSON, 2 as protobuf, 3 as msgpack
+- X-RPCX-MessageID: 消息id, uint64 类型
+- X-RPCX-ServicePath: service path
+- X-RPCX-ServiceMethod: service method
+- X-RPCX-Meta: 额外的元数据
+
+对于 http response, 可能会包含一些header:
+
+- X-RPCX-Version: rpcx 版本
+- X-RPCX-MesssageType: 1 ,代表response
+- X-RPCX-Heartbeat: 是否是heartbeat请求
+- X-RPCX-MessageStatusType: Error 还是正常返回结果
+- X-RPCX-SerializeType: 0 as raw bytes, 1 as JSON, 2 as protobuf, 3 as msgpack
+- X-RPCX-MessageID: 消息id, uint64 类型
+- X-RPCX-ServicePath: service path
+- X-RPCX-ServiceMethod: service method
+- X-RPCX-Meta: extra metadata
+- X-RPCX-ErrorMessage: 错误信息, 如果 X-RPCX-MessageStatusType 是 Error 的话
+
+
+### 例子
+
+下面是Go的一个例子:
+
+
+```go
+package main
+
+import (
+    "bytes"
+    "io/ioutil"
+    "log"
+    "net/http"
+
+    "github.com/rpcx-ecosystem/rpcx-gateway"
+
+    "github.com/smallnest/rpcx/codec"
+)
+
+type Args struct {
+    A int
+    B int
+}
+
+type Reply struct {
+    C int
+}
+
+func main() {
+    cc := &codec.MsgpackCodec{}
+
+    // request 
+    args := &Args{
+        A: 10,
+        B: 20,
+    }
+    data, _ := cc.Encode(args)
+
+    req, err := http.NewRequest("POST", "http://127.0.0.1:9981/", bytes.NewReader(data))
+    if err != nil {
+        log.Fatal("failed to create request: ", err)
+        return
+    }
+
+    // set extra headers
+    h := req.Header
+    h.Set(gateway.XMessageID, "10000")
+    h.Set(gateway.XMessageType, "0")
+    h.Set(gateway.XSerializeType, "3")
+    h.Set(gateway.XServicePath, "Arith")
+    h.Set(gateway.XServiceMethod, "Mul")
+
+    // send to gateway
+    res, err := http.DefaultClient.Do(req)
+    if err != nil {
+        log.Fatal("failed to call: ", err)
+    }
+    defer res.Body.Close()
+
+    // handle http response
+    replyData, err := ioutil.ReadAll(res.Body)
+    if err != nil {
+        log.Fatal("failed to read response: ", err)
+    }
+
+    // parse reply
+    reply := &Reply{}
+    err = cc.Decode(replyData, reply)
+    if err != nil {
+        log.Fatal("failed to decode reply: ", err)
+    }
+
+    log.Printf("%d * %d = %d", args.A, args.B, reply.C)
+}
+```
+
+不能进行双向通讯， 也就是服务端不能主动发送请求给客户端。
+
+---
+
+以下是对这段Go代码的详细解析：
+
+### 代码结构分析
+这段代码是一个通过RPCX网关调用远程服务的客户端实现，主要分为请求构造、协议头设置、服务调用和结果解析四个部分。核心功能是通过HTTP协议调用RPCX框架实现的Arith服务的Mul方法。
+
+---
+
+### 1. **依赖库与结构定义**
+```go
+import (
+    "bytes"
+    "io/ioutil"
+    "log"
+    "net/http"
+    "github.com/rpcx-ecosystem/rpcx-gateway"
+    "github.com/smallnest/rpcx/codec"
+)
+```
+- **rpcx/codec**：提供序列化编码器（此处使用Msgpack）
+- **rpcx-gateway**：定义RPCX网关协议头常量
+- **Args/Reply结构体**：定义服务调用的输入参数和返回结果结构
+
+---
+
+### 2. **编码器初始化**
+```go
+cc := &codec.MsgpackCodec{}  // 使用MessagePack序列化
+```
+- 选择Msgpack作为序列化协议（比JSON更高效）
+- RPCX支持多种序列化方式，包括JSON、Protobuf等
+
+---
+
+### 3. **请求构造**
+```go
+args := &Args{A: 10, B: 20}  // 输入参数
+data, _ := cc.Encode(args)    // 序列化为二进制
+req, _ := http.NewRequest("POST", "http://127.0.0.1:9981/", bytes.NewReader(data))
+```
+- 构造HTTP POST请求，将序列化后的参数作为请求体
+- 目标地址`9981`是RPCX网关默认监听端口
+
+---
+
+### 4. **协议头设置**
+```go
+h := req.Header
+h.Set(gateway.XMessageID, "10000")         // 消息唯一标识
+h.Set(gateway.XMessageType, "0")           // 请求类型（0表示普通请求）
+h.Set(gateway.XSerializeType, "3")         // 序列化类型（3对应Msgpack）
+h.Set(gateway.XServicePath, "Arith")       // 服务路径
+h.Set(gateway.XServiceMethod, "Mul")       // 方法名称
+```
+- **XSerializeType**：编码类型标识（3=Msgpack，1=JSON，2=Protobuf）
+- **XServicePath/Method**：定位服务端注册的Arith服务的Mul方法
+
+---
+
+### 5. **服务调用与响应处理**
+```go
+res, _ := http.DefaultClient.Do(req)       // 发送HTTP请求
+replyData, _ := ioutil.ReadAll(res.Body)   // 读取响应体
+reply := &Reply{}
+cc.Decode(replyData, reply)                // 反序列化结果
+```
+- 通过标准HTTP客户端发起调用
+- 将二进制响应反序列化为Reply结构体
+- 最终输出`10 * 20 = 200`的运算结果
+
+---
+
+### 技术亮点
+1. **协议抽象**：通过HTTP头部实现RPC元数据传递，兼容标准HTTP基础设施
+2. **高性能序列化**：Msgpack编码比JSON体积更小，解析速度更快
+3. **服务定位**：通过ServicePath/Method实现精准服务路由
+
+---
+
+### 典型应用场景
+这种调用方式适用于需要穿透API网关或服务网格的微服务间通信，常见于：
+1. 跨语言服务调用（通过HTTP+Msgpack协议）
+2. 需要与现有HTTP监控/日志系统集成
+3. 服务运行在Kubernetes等容器编排平台时
+
+（完整实现可参考RPCX官方文档）
+
+
+
+## HTTP 方式调用
+
+
+大部分场景下， rpcx服务是通过 TCP 进行通讯的， 但是你也可以直接通过 http 进行访问， http请求需要设置一些 header, 这和  [gateway](https://github.com/rpcxio/rpcx-gateway) 中的 header 是一样的。
+
+很明显，通过http调用不可能取得和 TCP 一样的性能， 因为 http 调用是`一问一答`方式进行通讯的， 并不能并发的请求(除非你使用很多client)， 但是调用方式简单， 也可以应用在一些场景中。
+
+http调用的服务必须使用 TCP 方式部署，而不能使用 UDP或者其他方式， 它和TCP共用同一个接口。 一个连接只能使用http调用或者TCP调用。
+
+你可以使用你熟悉的语言进行调用，设置你使用的编解码器，最常用的是JSON编解码，注意一定要添加相应的header,否则rpcx服务不知道该如果处理这个htp请求。
+
+下面是一个http调用的例子:
+
+
+```go
+func main() {
+    cc := &codec.MsgpackCodec{}
+
+    args := &Args{
+        A: 10,
+        B: 20,
+    }
+
+    data, _ := cc.Encode(args)
+
+    req, err := http.NewRequest("POST", "http://127.0.0.1:8972/", bytes.NewReader(data))
+    if err != nil {
+        log.Fatal("failed to create request: ", err)
+        return
+    }
+
+    h := req.Header
+    h.Set(gateway.XMessageID, "10000")
+    h.Set(gateway.XMessageType, "0")
+    h.Set(gateway.XSerializeType, "3")
+    h.Set(gateway.XServicePath, "Arith")
+    h.Set(gateway.XServiceMethod, "Mul")
+
+    res, err := http.DefaultClient.Do(req)
+    if err != nil {
+        log.Fatal("failed to call: ", err)
+    }
+    defer res.Body.Close()
+
+    // handle http response
+    replyData, err := ioutil.ReadAll(res.Body)
+    if err != nil {
+        log.Fatal("failed to read response: ", err)
+    }
+
+    reply := &Reply{}
+    err = cc.Decode(replyData, reply)
+    if err != nil {
+        log.Fatal("failed to decode reply: ", err)
+    }
+
+    log.Printf("%d * %d = %d", args.A, args.B, reply.C)
+}
+```
+
+不能进行双向通讯， 也就是服务端不能主动发送请求给客户端。
+
+---
+
+以下是对这段Go代码的详细解释，结合相关技术文档进行分析：
+
+---
+
+### **1. 初始化与参数编码**
+```go
+cc := &codec.MsgpackCodec{}  // 使用MessagePack序列化
+args := &Args{A: 10, B: 20}  // 输入参数
+data, _ := cc.Encode(args)    // 序列化为二进制数据
+```
+- **MsgpackCodec**：选择MessagePack作为序列化协议，其编码效率高于JSON（网页1提到RPCX支持多种编解码器，3对应Msgpack）。
+- **Args结构体**：定义RPC方法的输入参数，对应服务端`Arith.Mul`方法的参数（网页1的示例代码中服务端定义了`Mul`方法）。
+
+---
+
+### **2. 构造HTTP请求**
+```go
+req, _ := http.NewRequest("POST", "http://127.0.0.1:8972/", bytes.NewReader(data))
+```
+- **目标地址**：`http://127.0.0.1:8972/`是RPCX网关的默认监听地址（网页8的示例中网关地址为8972端口）。
+- **请求体**：将序列化的参数数据通过HTTP Body发送（网页8的客户端代码类似）。
+
+---
+
+### **3. 设置协议头**
+```go
+h := req.Header
+h.Set(gateway.XMessageID, "10000")         // 唯一消息标识
+h.Set(gateway.XMessageType, "0")           // 普通请求类型
+h.Set(gateway.XSerializeType, "3")         // 序列化类型（3=Msgpack）
+h.Set(gateway.XServicePath, "Arith")       // 服务路径
+h.Set(gateway.XServiceMethod, "Mul")       // 方法名称
+```
+- **关键头部**：这些头部是RPCX网关的核心参数，用于路由和协议解析（网页6和网页8均提到通过HTTP头传递元数据）。
+- **XServicePath/Method**：定位服务端注册的`Arith`服务的`Mul`方法（网页1的服务端代码注册了`Arith`服务）。
+
+---
+
+### **4. 发送请求与处理响应**
+```go
+res, _ := http.DefaultClient.Do(req)       // 发送HTTP请求
+replyData, _ := ioutil.ReadAll(res.Body)   // 读取响应体
+reply := &Reply{}
+cc.Decode(replyData, reply)                // 反序列化结果
+```
+- **HTTP交互**：通过标准HTTP客户端调用网关，网关将请求转发给RPCX服务端（网页8的流程图描述此过程）。
+- **结果解析**：使用Msgpack解码响应数据到`Reply`结构体（网页1的服务端`Mul`方法返回`Reply{C: A*B}`）。
+
+---
+
+### **5. 技术实现原理**
+1. **协议转换**：HTTP请求通过网关转换为RPCX协议，调用远程服务（网页6提到网关是HTTP与RPCX的桥梁）。
+2. **服务发现**：网关根据`XServicePath`和`XServiceMethod`定位具体服务（网页3的示例中客户端通过服务名调用）。
+3. **序列化兼容性**：Msgpack的二进制编码确保跨语言兼容（网页7提到RPCX支持多语言调用）。
+
+---
+
+### **6. 典型输出与调试**
+- **预期输出**：`10 * 20 = 200`，与服务端计算结果一致（网页1的示例输出相同）。
+- **错误处理**：若服务未注册或头部错误，网关返回HTTP 500（网页8的代码示例包含错误处理逻辑）。
+
+---
+
+### **引用来源**
+- 网页1：RPCX框架基础与示例
+- 网页6：网关的HTTP-RPC协议转换
+- 网页7：跨语言调用与序列化支持
+- 网页8：具体代码实现与头部参数说明
+
+如需进一步调试或扩展功能，可参考上述文档中的服务注册、负载均衡等高级特性。
+
+
+
+## 双向通讯
+
+*Example*:[bidirectional](https://github.com/rpcxio/rpcx-examples/tree/master/bidirectional)
+
+在正常情况下， 客户端发送请求，服务器返回结果，这样一问一答的方式就是`request-response` rpc 模型。
+
+但是对于一些用户， 比如 `IoT` 的开发者， 可能需要在某些时候发送通知给客户端。 如果客户端和服务端都配两套代码就显得多余和臃肿了。
+
+rpcx实现了一个简单的通知机制。
+
+首先你需要缓存客户端的连接，可能还需要将用户的ID和连接进行关联， 以便服务器知道将通知发送给哪个客户端。
+
+
+### Server
+
+
+服务器使用`SendMessage`方法发送通知， 数据是`[]byte`类型。 你可以设置 `servicePath` 和 `serviceMethod`以便提供给客户端更多的信息，用来区分不同的通知。
+
+`net.Conn` 对象可以在客户端调用服务的时候从`ctx.Value(server.RemoteConnContextKey)`中获取。
+
+
+```go
+func (s *Server) SendMessage(conn net.Conn, servicePath, serviceMethod string, metadata map[string]string, data []byte) error
+```
+
+```go
+// server.go
+func main() {
+    flag.Parse()
+
+    ln, _ := net.Listen("tcp", ":9981")
+    go http.Serve(ln, nil)
+
+    s := server.NewServer()
+    //s.RegisterName("Arith", new(example.Arith), "")
+    s.Register(new(Arith), "")
+    go s.Serve("tcp", *addr)
+
+    for !connected {
+        time.Sleep(time.Second)
+    }
+
+    fmt.Printf("start to send messages to %s\n", clientConn.RemoteAddr().String())
+    for {
+        if clientConn != nil {
+            err := s.SendMessage(clientConn, "test_service_path", "test_service_method", nil, []byte("abcde"))
+            if err != nil {
+                fmt.Printf("failed to send messsage to %s: %v\n", clientConn.RemoteAddr().String(), err)
+                clientConn = nil
+            }
+        }
+        time.Sleep(time.Second)
+    }
+}
+```
+
+以下是对这段Go代码的详细解析，结合rpcx框架特性和相关技术文档：
+
+### 一、代码结构概述
+这段代码实现了一个结合HTTP服务和RPCX框架的混合服务器，主要包含以下功能模块：
+1. 启动HTTP服务监听
+2. 初始化RPCX服务端
+3. 注册RPC服务
+4. 主动向客户端发送消息
+5. 连接状态管理
+
+### 二、核心功能解析
+#### 1. HTTP服务启动
+```go
+ln, _ := net.Listen("tcp", ":9981")
+go http.Serve(ln, nil)
+```
+- 在9981端口创建TCP监听器
+- 启动HTTP服务但未注册任何路由（handler为nil），可能用于健康检查或占位
+- 通过goroutine实现非阻塞启动
+
+#### 2. RPCX服务初始化
+```go
+s := server.NewServer()
+s.Register(new(Arith), "") 
+go s.Serve("tcp", *addr)
+```
+- `NewServer()`创建RPCX服务实例
+- `Register`方法注册名为Arith的服务（未显式命名则使用类型名）
+- `Serve("tcp", *addr)`启动TCP协议的RPCX服务
+
+#### 3. 连接状态监控
+```go
+for !connected {
+    time.Sleep(time.Second)
+}
+```
+- 等待全局变量connected变为true（代码未展示设置逻辑）
+- 典型场景：等待客户端通过注册中心（如Zookeeper）建立连接
+
+#### 4. 消息主动推送
+```go
+s.SendMessage(clientConn, "test_service_path", "test_service_method", nil, []byte("abcde"))
+```
+- 使用RPCX的SendMessage方法实现服务端主动推送
+- 参数说明：
+    - clientConn：已建立的客户端连接对象
+    - "test_service_path"：服务路径标识
+    - "test_service_method"：方法标识
+    - []byte("abcde")：发送的二进制数据
+
+### 三、技术特性分析
+#### 1. 混合协议支持
+- 同时监听HTTP(9981端口)和RPCX TCP服务（通过*addr指定端口）
+- 符合微服务架构中多协议共存的常见场景
+
+#### 2. 服务注册机制
+- 使用隐式注册`s.Register(new(Arith), "")`，等效于：
+  ```go
+  s.RegisterName("Arith", new(Arith), "")
+  ```
+- 注册中心未显式配置，可能使用直连模式
+
+#### 3. 消息推送模式
+- 突破传统RPC的请求-响应模式，实现服务端主动推送
+- 适用于实时通知、心跳维持等场景
+
+### 四、潜在问题说明
+1. **连接管理缺陷**：
+    - clientConn的赋值逻辑未展示，可能导致死循环
+    - 缺少连接断开重试机制
+
+2. **错误处理不足**：
+    - net.Listen未处理错误
+    - SendMessage错误仅打印日志，无重连逻辑
+
+3. **服务发现缺失**：
+    - 未使用注册中心（如Zookeeper/Consul）
+    - 客户端需直连服务地址
+
+### 五、典型应用场景
+1. **IoT设备双向通信**：
+    - 设备通过HTTP上报数据
+    - 服务端通过RPCX推送配置更新
+
+2. **游戏服务器架构**：
+    - HTTP处理用户登录
+    - RPCX处理实时战斗指令
+
+3. **金融交易系统**：
+    - HTTP接口用于订单提交
+    - RPCX推送行情数据
+
+### 六、与标准库对比
+| 特性                | net/http           | RPCX               |
+|---------------------|--------------------|--------------------|
+| 协议支持            | HTTP/1.x          | TCP/HTTP/QUIC/KCP |
+| 服务治理            | 无                 | 负载均衡/熔断     |
+| 性能                | 中等               | 高（2倍gRPC） |
+| 双向通信            | 需WebSocket        | 原生支持      |
+| 适用场景            | REST API           | 微服务通信        |
+
+该代码展示了如何将标准库与RPCX框架结合使用，兼具HTTP接口的易用性和RPC的高性能特性。如需生产环境使用，建议补充服务注册发现、连接池管理等模块。
+
+
+### Client
+
+你必须使用 `NewBidirectionalXClient` 创建 XClient 客户端， 你需要传如一个channel， 这样你就可以从channel中读取通知了。
+
+
+```go
+// client.go
+func main() {
+    flag.Parse()
+
+    ch := make(chan *protocol.Message)
+
+    d := client.NewPeer2PeerDiscovery("tcp@"+*addr, "")
+    xclient := client.NewBidirectionalXClient("Arith", client.Failtry, client.RandomSelect, d, client.DefaultOption, ch)
+    defer xclient.Close()
+
+    args := &example.Args{
+        A: 10,
+        B: 20,
+    }
+
+    reply := &example.Reply{}
+    err := xclient.Call(context.Background(), "Mul", args, reply)
+    if err != nil {
+        log.Fatalf("failed to call: %v", err)
+    }
+
+    log.Printf("%d * %d = %d", args.A, args.B, reply.C)
+
+    for msg := range ch {
+        fmt.Printf("receive msg from server: %s\n", msg.Payload)
+    }
+}
+```
+
+以下是对这段Go语言代码的详细解析，结合rpcx框架特性和相关技术文档说明：
+
+### 一、代码功能概述
+这段代码实现了一个基于rpcx框架的双向RPC客户端，主要包含以下核心功能：
+1. **服务发现机制**：通过Peer2Peer直连模式定位服务端
+2. **双向通信客户端**：建立支持服务端主动推送的XClient
+3. **同步RPC调用**：执行"Arith.Mul"方法调用
+4. **异步消息接收**：通过channel处理服务端主动推送的消息
+
+---
+
+### 二、逐模块解析
+#### 1. 初始化与服务发现
+```go
+d := client.NewPeer2PeerDiscovery("tcp@"+*addr, "")
+```
+- **Peer2PeerDiscovery**：直接指定服务端地址的发现模式（网页6提到这是最基础的发现方式）
+- `tcp@`前缀：指定使用TCP协议通信（网页7说明RPC支持多种传输协议）
+- `*addr`参数：通过命令行传入服务端地址（如127.0.0.1:8972）
+
+#### 2. 创建双向客户端
+```go
+xclient := client.NewBidirectionalXClient(
+    "Arith",          // 服务名称
+    client.Failtry,   // 故障处理策略
+    client.RandomSelect, // 服务选择策略
+    d,                // 发现实例
+    client.DefaultOption, 
+    ch)               // 消息通道
+```
+- **BidirectionalXClient**：支持服务端主动推送的双向客户端（网页6提到rpcx支持服务元数据动态更新）
+- **Failtry策略**：失败后立即重试（网页4说明工作队列的错误处理机制）
+- **RandomSelect**：随机选择服务实例（网页6提到负载均衡策略）
+
+#### 3. RPC同步调用
+```go
+err := xclient.Call(context.Background(), "Mul", args, reply)
+```
+- **Call方法**：执行远程方法调用（网页7描述的RPC标准流程）
+- 参数结构`Args`/`Reply`：需与服务端定义一致（网页1说明client-go的序列化机制）
+- 上下文传递：使用context.Background()保持请求上下文
+
+#### 4. 异步消息处理
+```go
+for msg := range ch {
+    fmt.Printf("receive msg from server: %s\n", msg.Payload)
+}
+```
+- **Channel机制**：使用Go协程通道接收服务端推送（网页8/9说明Go的通道通信原理）
+- **Message结构**：包含Payload字段存放推送内容（网页5描述嵌入式RPC的消息格式）
+- 持续监听：通过range循环实现长连接消息接收
+
+---
+
+### 三、关键技术特性
+1. **双向通信机制**：
+    - 基础RPC只支持请求-响应模式，该代码通过channel实现服务端主动推送（网页7对比同步/异步RPC差异）
+    - 类似WebSocket的双工通信，但基于更底层的TCP协议（网页5说明不同协议选择）
+
+2. **服务治理策略**：
+    - Failtry策略在调用失败时立即重试（网页4的限速队列实现错误重试逻辑）
+    - RandomSelect实现无状态服务的负载均衡（网页6的服务选择机制）
+
+3. **资源管理**：
+    - `defer xclient.Close()`确保连接释放（网页1强调client-go的资源回收重要性）
+    - channel的正确关闭避免goroutine泄漏（网页9的通道关闭注意事项）
+
+---
+
+### 四、执行流程示意
+```mermaid
+sequenceDiagram
+    participant Client
+    participant XClient
+    participant Server
+
+    Client->>XClient: 初始化双向客户端
+    XClient->>Server: 建立TCP长连接
+    Client->>XClient: 调用Mul(10,20)
+    XClient->>Server: 发送RPC请求
+    Server->>XClient: 返回200
+    XClient->>Client: 写reply.C=200
+    Server->>XClient: 主动推送消息
+    XClient->>Client: 通过ch传递消息
+```
+
+---
+
+### 五、典型应用场景
+1. **实时监控系统**：服务端定期推送监控指标
+2. **分布式任务调度**：服务端下发任务执行指令
+3. **物联网双向通信**：设备与控制中心的双向指令交互
+4. **游戏服务器**：玩家状态变更的实时广播
+
+---
+
+### 六、扩展建议
+1. **服务发现增强**：集成Zookeeper/Etcd实现动态发现（网页6的注册中心方案）
+2. **协议优化**：改用QUIC协议提升弱网环境表现（网页7提到的协议选择）
+3. **消息压缩**：结合Msgpack等二进制序列化（网页1的编码优化方案）
+4. **流量控制**：基于网页4的限速队列实现反压机制
+
+该代码展示了rpcx框架在双向通信场景下的典型应用模式，通过合理组合基础组件实现了高效的RPC通信架构。实际生产环境中，建议补充连接池管理、熔断机制等企业级特性。
+
+
+
